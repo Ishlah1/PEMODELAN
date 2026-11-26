@@ -1,0 +1,94 @@
+"""Dimensi metrik jaringan pipa air UNAND: verifikasi, batas bawah (ILP), greedy, dan tabel suplemen.
+ 
+Masukan : edges.csv (dua kolom: simpul_u,simpul_v; satu baris per ruas pipa)
+Keluaran: adjacency_list.csv, distance_matrix.csv, vectors.csv
+"""
+import csv
+import numpy as np
+import networkx as nx
+from scipy.optimize import milp, LinearConstraint, Bounds
+ 
+BASIS = ["A9", "O3", "B4", "M3", "A2", "H5", "A4", "A10", "E2", "M10"]
+ 
+ 
+def load_graph(path):
+    G = nx.Graph()
+    with open(path, newline="") as f:
+        for row in csv.reader(f):
+            if row and not row[0].startswith("#"):
+                G.add_edge(row[0].strip(), row[1].strip())
+    assert nx.is_connected(G), "graf harus terhubung"
+    return G
+ 
+ 
+def distance_matrix(G):
+    """Matriks jarak D lewat BFS dari setiap simpul (graf tak berbobot)."""
+    nodes = sorted(G.nodes)
+    idx = {v: i for i, v in enumerate(nodes)}
+    D = np.zeros((len(nodes), len(nodes)), dtype=int)
+    for s, dist in nx.all_pairs_shortest_path_length(G):
+        for t, d in dist.items():
+            D[idx[s], idx[t]] = d
+    return nodes, D
+ 
+ 
+def is_resolving(D, cols):
+    """True jika semua vektor r(v|W) berbeda."""
+    vecs = [tuple(D[i, cols]) for i in range(D.shape[0])]
+    return len(set(vecs)) == len(vecs)
+ 
+ 
+def separating_matrix(D):
+    """Baris = pasangan {u,v}; kolom w bernilai 1 jika d(u,w) != d(v,w)."""
+    n = D.shape[0]
+    return np.array([(D[u] != D[v]).astype(int)
+                     for u in range(n) for v in range(u + 1, n)])
+ 
+ 
+def ilp_min_resolving_set(D, cost=None):
+    """ILP: min sum c_w x_w  s.t.  sum_{w in S(u,v)} x_w >= 1, x_w in {0,1}.
+    Dengan c_w = 1 nilai optimumnya adalah dim(G) (sertifikat optimalitas)."""
+    A, n = separating_matrix(D), D.shape[0]
+    c = np.ones(n) if cost is None else np.asarray(cost, float)
+    res = milp(c=c, integrality=np.ones(n), bounds=Bounds(0, 1),
+               constraints=LinearConstraint(A, lb=1))
+    assert res.success, res.message
+    return [i for i in range(n) if res.x[i] > 0.5], res
+ 
+ 
+def greedy_resolving_set(D):
+    """Heuristik greedy: batas atas dim(G), tanpa jaminan minimum."""
+    A = separating_matrix(D)
+    unresolved, W = np.ones(A.shape[0], bool), []
+    while unresolved.any():
+        j = int(np.argmax(A[unresolved].sum(axis=0)))
+        W.append(j)
+        unresolved &= (A[:, j] == 0)
+    return W
+ 
+ 
+def main(edge_file="edges.csv"):
+    G = load_graph(edge_file)
+    nodes, D = distance_matrix(G)
+    idx = {v: i for i, v in enumerate(nodes)}
+    W = [idx[v] for v in BASIS]
+    print("|V|, |E| =", G.number_of_nodes(), G.number_of_edges())
+    print("W resolving:", is_resolving(D, W), "| |W| =", len(W))
+    opt, res = ilp_min_resolving_set(D)
+    print("ILP optimum (dim G):", len(opt), "|", res.message)
+    print("Greedy |W|:", len(greedy_resolving_set(D)))
+    with open("adjacency_list.csv", "w", newline="") as f:
+        wr = csv.writer(f)
+        for v in nodes:
+            wr.writerow([v] + sorted(G[v]))
+    np.savetxt("distance_matrix.csv", D, fmt="%d", delimiter=",",
+               header=",".join(nodes), comments="")
+    with open("vectors.csv", "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["simpul"] + BASIS)
+        for v in nodes:
+            wr.writerow([v] + [int(D[idx[v], j]) for j in W])
+ 
+ 
+if __name__ == "__main__":
+    main()
